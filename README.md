@@ -7,7 +7,7 @@ Built for the Omarchy Quattro shell as a `bar-widget` with a nested details pane
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/homodeus/omayoutube-dl.git --enable
+omarchy plugin add https://github.com/Aznit11/omayoutube-dl.git --enable
 ```
 
 Requires system tools (already on most Omarchy installs):
@@ -49,13 +49,13 @@ Settings persist inline in `~/.config/omarchy/shell.json` on the plugin entry:
 Move the widget:
 
 ```sh
-omarchy bar move io.github.homodeus.omayoutube-dl --section right
+omarchy bar move io.github.Aznit11.omayoutube-dl --section right
 ```
 
 ## Remove
 
 ```sh
-omarchy plugin remove io.github.homodeus.omayoutube-dl
+omarchy plugin remove io.github.Aznit11.omayoutube-dl
 ```
 
 Killing the panel stops the audio preview. Cancelling downloads stops yt-dlp; partial `.part` files stay in the download folder for resume.

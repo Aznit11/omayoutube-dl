@@ -8,7 +8,7 @@ import qs.Ui
 // to the nested panel, mirrors download progress into the bar tooltip.
 BarWidget {
   id: root
-  moduleName: "io.github.homodeus.omayoutube-dl"
+  moduleName: "io.github.Aznit11.omayoutube-dl"
 
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
@@ -59,7 +59,7 @@ BarWidget {
   }
 
   IpcHandler {
-    target: "io.github.homodeus.omayoutube-dl"
+    target: "io.github.Aznit11.omayoutube-dl"
 
     function open(): void { root.open(); }
     function close(): void { root.close(); }

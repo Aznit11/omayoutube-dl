@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.homodeus.omayoutube-dl",
+  "id": "io.github.Aznit11.omayoutube-dl",
   "name": "OmaYoutube-dl",
   "version": "1.1.0",
-  "author": "homodeus",
+  "author": "Aznit11",
   "license": "MIT",
   "description": "Search YouTube, preview audio, download videos/audios and playlists with yt-dlp.",
   "kinds": ["bar-widget"],
