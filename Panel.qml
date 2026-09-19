@@ -12,7 +12,7 @@ import "Model.js" as Model
 // playlists with live progress, settings persisted to shell.json.
 Panel {
   id: root
-  moduleName: "io.github.Aznit11.omayoutube-dl"
+  moduleName: "io.github.aznit11.omayoutube-dl"
   manageIpc: false
 
   property var anchorItem: null

@@ -49,13 +49,13 @@ Settings persist inline in `~/.config/omarchy/shell.json` on the plugin entry:
 Move the widget:
 
 ```sh
-omarchy bar move io.github.Aznit11.omayoutube-dl --section right
+omarchy bar move io.github.aznit11.omayoutube-dl --section right
 ```
 
 ## Remove
 
 ```sh
-omarchy plugin remove io.github.Aznit11.omayoutube-dl
+omarchy plugin remove io.github.aznit11.omayoutube-dl
 ```
 
 Killing the panel stops the audio preview. Cancelling downloads stops yt-dlp; partial `.part` files stay in the download folder for resume.
