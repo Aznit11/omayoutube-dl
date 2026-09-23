@@ -37,6 +37,13 @@ Panel {
   property string searchError: ""
   property string statusLine: "Search YouTube, watch inside, download anything."
 
+  // ---- search safety limits (untrusted yt-dlp -J output) ----
+  // Hard output cap + deadline: kill the provider process and reject the
+  // request when either is exceeded, before JSON parsing.
+  readonly property int searchMaxBytes: 1048576
+  readonly property int searchTimeoutMs: 30000
+  property string searchAbortReason: ""
+
   // ---- in-plugin player ----
   property string nowTitle: ""
   property string nowUrl: ""
@@ -119,21 +126,59 @@ Panel {
   }
 
   // ================= search =================
+  function searchOutputSize() {
+    var n = 0;
+    try { n += searchStdout.text.length; } catch (e) {}
+    try { n += searchStderr.text.length; } catch (e) {}
+    return n;
+  }
+
+  function abortSearch(reason) {
+    if (root.searchAbortReason === "") root.searchAbortReason = reason;
+    searchTimeout.stop();
+    if (searchProc.running) searchProc.running = false;
+    if (root.searching) {
+      root.searching = false;
+      if (reason === "timeout") {
+        root.searchError = "Search timed out after " + Math.round(root.searchTimeoutMs / 1000) + "s. Try again.";
+        root.statusLine = "Search timed out.";
+      } else {
+        root.searchError = "Search response too large (>" + Math.round(root.searchMaxBytes / 1024) + " KB). Rejected.";
+        root.statusLine = "Search rejected: response too large.";
+      }
+    }
+  }
+
+  function enforceSearchLimits() {
+    if (!root.searching || root.searchAbortReason !== "") return;
+    if (root.searchOutputSize() > root.searchMaxBytes) root.abortSearch("too-large");
+  }
+
   function doSearch() {
     var q = searchField.text.replace(/^\s+|\s+$/g, "");
     if (q === "" || searchProc.running) return;
     root.query = q;
     root.searching = true;
+    root.searchAbortReason = "";
     root.searchError = "";
     root.statusLine = "Searching for \"" + q + "\"…";
     resultsModel.clear();
     searchProc.command = ["yt-dlp", Model.searchSpec(q, root.maxResults), "--flat-playlist", "-J", "--no-warnings"];
     searchProc.running = true;
+    searchTimeout.restart();
   }
 
   function handleSearchDone(text) {
+    searchTimeout.stop();
+    if (root.searchAbortReason !== "") return;
     root.searching = false;
-    var items = Model.parseSearchJson(text);
+    var s = String(text || "");
+    if (s.length > root.searchMaxBytes) {
+      root.searchError = "Search response too large (>" + Math.round(root.searchMaxBytes / 1024) + " KB). Rejected.";
+      root.statusLine = "Search rejected: response too large.";
+      return;
+    }
+    var items = Model.parseSearchJson(s);
     resultsModel.clear();
     for (var i = 0; i < items.length; ++i) resultsModel.append(items[i]);
     if (items.length === 0) {
@@ -450,14 +495,33 @@ Panel {
   }
 
   // ---- processes ----
+  // Hard deadline for the search provider: a hanging yt-dlp is killed and
+  // the request rejected instead of buffering forever.
+  Timer {
+    id: searchTimeout
+    interval: root.searchTimeoutMs
+    repeat: false
+    onTriggered: root.abortSearch("timeout")
+  }
+
   Process {
     id: searchProc
     stdout: StdioCollector {
+      id: searchStdout
       waitForEnd: true
-      onStreamFinished: root.handleSearchDone(String(text || ""))
+      onDataChanged: root.enforceSearchLimits()
+      onStreamFinished: {
+        if (root.searchAbortReason === "") root.handleSearchDone(String(text || ""));
+      }
     }
-    stderr: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector {
+      id: searchStderr
+      waitForEnd: true
+      onDataChanged: root.enforceSearchLimits()
+    }
     onExited: function(code) {
+      searchTimeout.stop();
+      if (root.searchAbortReason !== "") return;
       if (code !== 0 && root.searching) {
         root.searching = false;
         root.searchError = "Search failed (exit " + code + "). Is yt-dlp installed?";
@@ -606,6 +670,7 @@ Panel {
             }
             Text {
               text: root.statusLine
+              textFormat: Text.PlainText
               color: Qt.darker(root.barForeground, 1.4)
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.bodySmall
@@ -785,6 +850,7 @@ Panel {
               Text {
                 width: parent.width - Style.space(150)
                 text: "⬇ " + root.activeTitle
+                textFormat: Text.PlainText
                 color: root.barForeground
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.bodySmall
@@ -826,6 +892,7 @@ Panel {
             Text {
               width: parent.width
               text: root.activeDetail
+              textFormat: Text.PlainText
               color: Qt.darker(root.barForeground, 1.5)
               font.family: "monospace"
               font.pixelSize: Style.font.caption
@@ -880,6 +947,7 @@ Panel {
                 Text {
                   width: parent.width
                   text: (root.resolving || root.caching ? "◌ " : (root.previewPaused ? "⏸ " : "▶ ")) + root.nowTitle
+                  textFormat: Text.PlainText
                   color: root.barForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.bodySmall
@@ -913,6 +981,7 @@ Panel {
                   visible: root.playerError !== ""
                   width: parent.width
                   text: "⚠ " + root.playerError
+                  textFormat: Text.PlainText
                   color: Color.urgent
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
@@ -1076,6 +1145,7 @@ Panel {
                     anchors.bottom: parent.bottom
                     anchors.margins: 3
                     text: " " + duration + " "
+                    textFormat: Text.PlainText
                     color: "white"
                     font.pixelSize: Style.font.caption
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -1094,6 +1164,7 @@ Panel {
                   Text {
                     width: parent.width
                     text: title
+                    textFormat: Text.PlainText
                     color: root.barForeground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.body
@@ -1105,6 +1176,7 @@ Panel {
                   Text {
                     width: parent.width
                     text: channel
+                    textFormat: Text.PlainText
                     color: Qt.darker(root.barForeground, 1.4)
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.bodySmall
@@ -1218,6 +1290,7 @@ Panel {
                 Text {
                   width: parent.width - Style.space(52)
                   text: (index + 1) + ". " + title
+                  textFormat: Text.PlainText
                   color: root.barForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.bodySmall
@@ -1288,6 +1361,7 @@ Panel {
                   Text {
                     width: parent.width
                     text: "✓ " + title
+                    textFormat: Text.PlainText
                     color: root.barForeground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.bodySmall
@@ -1296,6 +1370,7 @@ Panel {
                   Text {
                     width: parent.width
                     text: detail
+                    textFormat: Text.PlainText
                     color: Qt.darker(root.barForeground, 1.5)
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.caption

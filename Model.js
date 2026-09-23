@@ -1,22 +1,34 @@
 // OmaYoutube-dl helpers: parsing + command builders. Pure JS, no Qt deps.
 
+// Must match Panel.qml searchMaxBytes: hard cap on untrusted yt-dlp -J
+// output. Panel.qml kills the provider process above this size and rejects
+// before parsing; this guard is defense-in-depth for direct callers/tests.
+var SEARCH_MAX_BYTES = 1048576;
+var SEARCH_MAX_ENTRIES = 50;
+
 function parseSearchJson(raw) {
   var out = [];
   try {
-    var doc = JSON.parse(raw);
+    var s = String(raw || "");
+    if (s === "" || s.length > SEARCH_MAX_BYTES) return out;
+    var doc = JSON.parse(s);
     var entries = doc.entries || [];
-    for (var i = 0; i < entries.length; ++i) {
+    var n = Math.min(entries.length, SEARCH_MAX_ENTRIES);
+    for (var i = 0; i < n; ++i) {
       var e = entries[i] || {};
-      if (!e.id) continue;
+      var id = String(e.id || "");
+      // Video ids are [A-Za-z0-9_-]; reject anything else so a crafted
+      // provider response cannot inject URLs/thumbnails.
+      if (!/^[A-Za-z0-9_-]{1,32}$/.test(id)) continue;
       var dur = e.duration_string || "";
       if (!dur && e.duration) dur = formatDuration(e.duration);
       out.push({
-        id: String(e.id),
-        title: String(e.title || "Untitled"),
-        channel: String(e.channel || e.uploader || "Unknown"),
-        duration: String(dur || "--:--"),
-        url: "https://www.youtube.com/watch?v=" + String(e.id),
-        thumb: "https://i.ytimg.com/vi/" + String(e.id) + "/mqdefault.jpg"
+        id: id,
+        title: String(e.title || "Untitled").slice(0, 300),
+        channel: String(e.channel || e.uploader || "Unknown").slice(0, 200),
+        duration: String(dur || "--:--").slice(0, 16),
+        url: "https://www.youtube.com/watch?v=" + id,
+        thumb: "https://i.ytimg.com/vi/" + id + "/mqdefault.jpg"
       });
     }
   } catch (err) {}
