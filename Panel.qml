@@ -34,7 +34,18 @@ Panel {
   property string dlMode: setting("dlMode", "video")
   property string playlistMode: setting("playlistMode", "single")
   property string maxResults: setting("maxResults", "10")
+  property string searchSort: setting("searchSort", "relevance")
+  property string cookiesBrowser: setting("cookiesBrowser", "off")
   property bool showVideo: setting("showVideo", true)
+  property string audioLang: setting("audioLang", "original")
+  property string subLangs: setting("subLangs", "off")
+  property bool embedSubs: setting("embedSubs", false)
+  property string whisperEngine: setting("whisperEngine", "local")
+  property string whisperLang: setting("whisperLang", "pt")
+  property string whisperModel: setting("whisperModel", "medium")
+  property string whisperCmd: setting("whisperCmd", "auto")
+  property string whisperApiModel: setting("whisperApiModel", "whisper-1")
+  property string whisperKeyEnv: setting("whisperKeyEnv", "OPENAI_API_KEY")
 
   // ---- ui state ----
   property string tab: "search"
@@ -73,6 +84,12 @@ Panel {
   property string activeUrl: ""
   property string activeDetail: "idle"
   property string lastDone: ""
+
+  // ---- transcription (whisper, local by default) ----
+  property bool transcribing: false
+  property string transcribeTitle: ""
+  property string transcribeDetail: "idle"
+  property real transcribePct: 0
 
   function setting(name, fallback) {
     var v = settings ? settings[name] : undefined;
@@ -169,7 +186,7 @@ Panel {
     root.searchError = "";
     root.statusLine = "Searching for \"" + q + "\"…";
     resultsModel.clear();
-    searchProc.command = ["yt-dlp", Model.searchSpec(q, root.maxResults), "--flat-playlist", "-J", "--no-warnings"];
+    searchProc.command = ["yt-dlp", Model.searchSpec(q, root.maxResults, root.searchSort), "--flat-playlist", "--playlist-end", root.maxResults, "-J", "--no-warnings"].concat(Model.cookiesArgs(root.cookiesBrowser));
     searchProc.running = true;
     searchTimeout.restart();
   }
@@ -219,7 +236,7 @@ Panel {
     // Progressive H.264 mp4 (video+audio in one URL) so the player shows
     // picture + sound. itag 22/18 are H.264; VAAPI is broken for AV1/VP9
     // here (black screen), so avc is preferred throughout.
-    resolveProc.command = ["yt-dlp", "-g", "-f", "22/18/17/36/b[vcodec^=avc1][height<=480]/b[height<=480]/w", "--no-warnings", root.nowUrl];
+    resolveProc.command = ["yt-dlp", "-g", "-f", "22/18/17/36/b[vcodec^=avc1][height<=480]/b[height<=480]/w", "--no-warnings"].concat(Model.cookiesArgs(root.cookiesBrowser)).concat([root.nowUrl]);
     resolveProc.running = true;
   }
 
@@ -251,7 +268,7 @@ Panel {
     root.cacheDetail = "caching video for in-plugin playback…";
     root.cacheFile = Model.cacheFileFor(root.nowId, root.homeDir);
     root.statusLine = "Caching video (one-time)…";
-    cacheProc.command = ["bash", "-c", Model.buildCacheScript(root.nowUrl, root.cacheFile)];
+    cacheProc.command = ["bash", "-c", Model.buildCacheScript(root.nowUrl, root.cacheFile, root.cookiesBrowser)];
     cacheProc.running = true;
   }
 
@@ -381,6 +398,7 @@ Panel {
     var script = Model.buildDownloadScript({
       url: jobUrl, mode: root.dlMode, quality: root.quality,
       audioFormat: root.audioFormat, videoFormat: root.videoFormat,
+      audioLang: root.audioLang, subLangs: root.subLangs, embedSubs: root.embedSubs, cookies: root.cookiesBrowser,
       outDir: root.downloadDir, playlist: root.playlistMode, home: root.homeDir
     });
     dlProc.command = ["bash", "-c", script];
@@ -472,6 +490,73 @@ Panel {
 
   function checkDeps() {
     depProc.running = true;
+  }
+
+  // ================= transcription (whisper) =================
+  function transcribe(title, url) {
+    var u = String(url || "");
+    console.log("[omayoutube] transcribe() engine=" + root.whisperEngine + " url=" + u.slice(0, 60));
+    if (u === "") { root.statusLine = "No URL to transcribe."; return; }
+    if (root.transcribing) { root.statusLine = "Already transcribing."; return; }
+    if (root.whisperEngine === "off") {
+      root.statusLine = "Transcription is off — pick an engine in Settings.";
+      root.tab = "settings";
+      return;
+    }
+    root.transcribing = true;
+    root.transcribeTitle = String(title || u);
+    root.transcribePct = 0;
+    root.transcribeDetail = "starting…";
+    root.statusLine = "Transcribing: " + root.transcribeTitle;
+    root.tab = "downloads";
+    var script = Model.buildTranscribeScript({
+      url: u, id: "", outDir: root.downloadDir, engine: root.whisperEngine,
+      localCmd: root.whisperCmd, lang: root.whisperLang, model: root.whisperModel,
+      apiModel: root.whisperApiModel,
+      keyEnv: root.whisperKeyEnv, cookies: root.cookiesBrowser, cacheDir: Model.cacheDir(root.homeDir), home: root.homeDir
+    });
+    trProc.command = ["bash", "-c", script];
+    trProc.running = true;
+  }
+
+  function handleTrLine(line) {
+    var s = String(line || "");
+    if (s.trim() === "") return;
+    // yt-dlp download progress (0-100).
+    var r = Model.parseProgressLine(s);
+    if (r) {
+      root.transcribePct = r.pct;
+      root.transcribeDetail = "Downloading audio… " + Math.round(r.pct) + "%";
+      return;
+    }
+    // whisper.cpp progress (-pp), e.g. "whisper_print_progress_callback: progress =  42%".
+    var wp = /progress\s*=\s*(\d+)\s*%/.exec(s);
+    if (wp) {
+      var v = parseInt(wp[1], 10);
+      if (isFinite(v)) root.transcribePct = Math.max(0, Math.min(100, v));
+      root.transcribeDetail = "Transcribing… " + Math.round(root.transcribePct) + "%";
+      return;
+    }
+    var t = s.trim();
+    if (t.indexOf("DONE:") === 0) {
+      root.transcribePct = 100;
+      root.transcribeDetail = "saved " + t.slice(5);
+      return;
+    }
+    root.transcribeDetail = t.slice(0, 120);
+  }
+
+  function cancelTranscribe() {
+    if (trProc.running) trProc.running = false;
+    root.transcribing = false;
+    root.transcribePct = 0;
+    root.transcribeDetail = "cancelled";
+    root.statusLine = "Transcription cancelled.";
+  }
+
+  function dismissTranscribe() {
+    root.transcribeDetail = "idle";
+    root.transcribePct = 0;
   }
 
   // Live player diagnostics are logged ([omayoutube] state/tracks/error)
@@ -590,8 +675,30 @@ Panel {
   Process { id: openProc }
 
   Process {
+    id: trProc
+    stdout: SplitParser { onRead: function(line) { root.handleTrLine(line); } }
+    stderr: SplitParser { onRead: function(line) { root.handleTrLine(line); } }
+    onExited: function(code) {
+      console.log("[omayoutube] transcribe process exited code=" + code + " transcribing=" + root.transcribing);
+      if (!root.transcribing) return;
+      root.transcribing = false;
+      if (code === 0) {
+        root.transcribePct = 100;
+        root.statusLine = "Subtitles ready: " + root.transcribeDetail;
+        historyModel.insert(0, {
+          title: root.transcribeTitle,
+          detail: ".srt • " + (root.whisperEngine === "openai" ? root.whisperApiModel : "whisper local"),
+          vid: "", url: ""
+        });
+      } else {
+        root.statusLine = "Transcription failed (exit " + code + "). " + root.transcribeDetail;
+      }
+    }
+  }
+
+  Process {
     id: depProc
-    command: ["bash", "-c", "echo -n 'yt-dlp '; (yt-dlp --version 2>/dev/null || echo missing); echo -n 'mpv '; (mpv --version 2>/dev/null | head -n1 || echo missing); echo -n 'ffmpeg '; (ffmpeg -version 2>/dev/null | head -n1 || echo missing)"]
+    command: ["bash", "-c", "echo -n 'yt-dlp '; (yt-dlp --version 2>/dev/null || echo missing); echo -n 'mpv '; (mpv --version 2>/dev/null | head -n1 || echo missing); echo -n 'ffmpeg '; (ffmpeg -version 2>/dev/null | head -n1 || echo missing); echo -n 'whisper '; (command -v whisper-cli || command -v whisper || echo missing); echo -n 'curl '; (command -v curl || echo missing)"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: { depText.text = String(text || "").trim(); }
@@ -717,6 +824,20 @@ Panel {
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             tooltipText: "Search YouTube"
             onClicked: root.doSearch()
+          }
+        }
+
+        // search sort/filter
+        Dropdown {
+          width: parent.width
+          label: "Search filter"
+          value: root.searchSort
+          options: Model.searchSortOptions()
+          foreground: root.panelForeground
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          onChanged: function(v) {
+            root.searchSort = v;
+            root.persistSettings({ searchSort: v });
           }
         }
 
@@ -898,6 +1019,78 @@ Panel {
             Text {
               width: parent.width
               text: root.activeDetail
+              textFormat: Text.PlainText
+              color: Qt.darker(root.panelForeground, 1.5)
+              font.family: "monospace"
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+          }
+        }
+
+        // ===== transcription progress =====
+        Rectangle {
+          visible: root.transcribing || (root.transcribeDetail !== "idle" && root.transcribeDetail !== "")
+          width: parent.width
+          height: trCard.implicitHeight + Style.space(20)
+          radius: Style.cornerRadius
+          color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.07)
+          border.width: 1
+          border.color: Color.accent
+          Column {
+            id: trCard
+            width: parent.width - Style.space(20)
+            x: Style.space(10)
+            y: Style.space(10)
+            spacing: Style.space(6)
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+              Text {
+                width: parent.width - Style.space(150)
+                text: "󰈙 " + root.transcribeTitle
+                textFormat: Text.PlainText
+                color: root.panelForeground
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                elide: Text.ElideRight
+              }
+              Text {
+                width: Style.space(60)
+                horizontalAlignment: Text.AlignRight
+                text: Math.round(root.transcribePct) + "%"
+                color: Color.accent
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.title
+                font.bold: true
+              }
+              Button {
+                width: Style.space(74)
+                text: root.transcribing ? "Cancel" : "Close"
+                iconText: ""
+                foreground: root.panelForeground
+                accent: Color.accent
+                fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                tooltipText: root.transcribing ? "Cancel transcription" : "Dismiss"
+                onClicked: root.transcribing ? root.cancelTranscribe() : root.dismissTranscribe()
+              }
+            }
+            Rectangle {
+              width: parent.width
+              height: Style.space(12)
+              radius: height / 2
+              color: Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.15)
+              Rectangle {
+                width: Math.max(Style.space(12), Math.round(parent.width * Math.max(0, Math.min(1, root.transcribePct / 100))))
+                height: parent.height
+                radius: parent.radius
+                color: Color.accent
+              }
+            }
+            Text {
+              width: parent.width
+              text: root.transcribeDetail
               textFormat: Text.PlainText
               color: Qt.darker(root.panelForeground, 1.5)
               font.family: "monospace"
@@ -1106,6 +1299,20 @@ Panel {
                       onClicked: root.playVideoMpv(root.nowUrl)
                     }
                   }
+                  Row {
+                    width: parent.width
+                    Button {
+                      width: parent.width
+                      text: "Subtitles (whisper)"
+                      iconText: "󰈙"
+                      bordered: true
+                      foreground: root.panelForeground
+                      accent: Color.accent
+                      fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                      tooltipText: "Transcribe this video to .srt"
+                      onClicked: root.transcribe(root.nowTitle, root.nowUrl)
+                    }
+                  }
                 }
               }
             }
@@ -1125,7 +1332,7 @@ Panel {
               required property string thumb
               required property int index
               width: resultsList.width
-              height: Style.space(80)
+              height: Style.space(116)
               radius: Style.cornerRadius
               color: rowMouse.containsMouse ? Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.10) : Qt.rgba(root.panelForeground.r, root.panelForeground.g, root.panelForeground.b, 0.04)
               border.width: 1
@@ -1207,13 +1414,24 @@ Panel {
                   Button {
                     width: Style.space(104)
                     text: "Download"
-                    iconText: ""
+                    iconText: ""
                     bordered: true
                     foreground: root.panelForeground
                     accent: Color.accent
                     fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                     tooltipText: "Queue for download"
                     onClicked: root.queueDownload(title, url)
+                  }
+                  Button {
+                    width: Style.space(104)
+                    text: "Subs"
+                    iconText: "󰈙"
+                    bordered: true
+                    foreground: root.panelForeground
+                    accent: Color.accent
+                    fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                    tooltipText: "Transcribe to .srt with local whisper"
+                    onClicked: root.transcribe(title, url)
                   }
                 }
               }
@@ -1398,11 +1616,21 @@ Panel {
           }
         }
 
-        // ---- SETTINGS TAB ----
-        Column {
+        // ---- SETTINGS TAB (scrollable) ----
+        Flickable {
+          id: settingsFlick
           visible: root.tab === "settings"
           width: parent.width
-          spacing: Style.space(8)
+          height: Math.min(settingsCol.implicitHeight, Style.space(520))
+          contentWidth: width
+          contentHeight: settingsCol.implicitHeight
+          clip: true
+          interactive: contentHeight > height
+          boundsBehavior: Flickable.StopAtBounds
+          Column {
+            id: settingsCol
+            width: settingsFlick.width
+            spacing: Style.space(8)
           Text {
             text: "DOWNLOAD LOCATION"
             color: Qt.darker(root.panelForeground, 1.4)
@@ -1491,6 +1719,26 @@ Panel {
               root.persistSettings({ maxResults: v });
             }
           }
+          Dropdown {
+            width: parent.width
+            label: "Browser cookies"
+            value: root.cookiesBrowser
+            options: Model.cookiesBrowserOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.cookiesBrowser = v;
+              root.persistSettings({ cookiesBrowser: v });
+            }
+          }
+          Text {
+            width: parent.width
+            text: "Cookies das settings do navegador (yt-dlp --cookies-from-browser) para passar no check de bot do YouTube."
+            color: Qt.darker(root.panelForeground, 1.5)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
           Toggle {
             width: parent.width
             label: "Playlist mode"
@@ -1514,6 +1762,159 @@ Panel {
             onClicked: {
               root.showVideo = !root.showVideo;
               root.persistSettings({ showVideo: root.showVideo });
+            }
+          }
+          Text {
+            text: "AUDIO TRACK & SUBTITLES"
+            color: Qt.darker(root.panelForeground, 1.4)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+          Dropdown {
+            width: parent.width
+            label: "Audio track (dub)"
+            value: root.audioLang
+            options: Model.audioLangOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.audioLang = v;
+              root.persistSettings({ audioLang: v });
+            }
+          }
+          Dropdown {
+            width: parent.width
+            label: "Subtitles (native)"
+            value: root.subLangs
+            options: Model.subLangsOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.subLangs = v;
+              root.persistSettings({ subLangs: v });
+            }
+          }
+          Toggle {
+            width: parent.width
+            label: "Embed subtitles"
+            description: "ON embeds into the video (forces MKV); OFF saves a .srt beside it"
+            checked: root.embedSubs
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onClicked: {
+              root.embedSubs = !root.embedSubs;
+              root.persistSettings({ embedSubs: root.embedSubs });
+            }
+          }
+          Text {
+            text: "TRANSCRIPTION (WHISPER)"
+            color: Qt.darker(root.panelForeground, 1.4)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+          Dropdown {
+            width: parent.width
+            label: "Engine"
+            value: root.whisperEngine
+            options: Model.whisperEngineOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.whisperEngine = v;
+              root.persistSettings({ whisperEngine: v });
+            }
+          }
+          Dropdown {
+            width: parent.width
+            label: "Transcription language"
+            value: root.whisperLang
+            options: Model.transcribeLangOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.whisperLang = v;
+              root.persistSettings({ whisperLang: v });
+            }
+          }
+          Dropdown {
+            width: parent.width
+            label: "Local model"
+            value: root.whisperModel
+            options: Model.whisperModelOptions()
+            foreground: root.panelForeground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onChanged: function(v) {
+              root.whisperModel = v;
+              root.persistSettings({ whisperModel: v });
+            }
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+            TextField {
+              id: whisperCmdField
+              width: parent.width - Style.space(88)
+              text: root.whisperCmd
+              foreground: root.panelForeground
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              placeholderText: "auto"
+              onEditingFinished: {
+                root.whisperCmd = text;
+                root.persistSettings({ whisperCmd: text });
+              }
+            }
+            Button {
+              width: Style.space(80)
+              text: "Save"
+              iconText: ""
+              bordered: true
+              foreground: root.panelForeground
+              accent: Color.accent
+              fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+              onClicked: {
+                root.whisperCmd = whisperCmdField.text;
+                root.persistSettings({ whisperCmd: whisperCmdField.text });
+                root.statusLine = "Whisper command saved.";
+              }
+            }
+          }
+          Text {
+            width: parent.width
+            text: "'auto' runs whisper-cli with your voxtype GGML models. Custom template: {wav} {input} {dir} {lang}."
+            color: Qt.darker(root.panelForeground, 1.5)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+          Row {
+            visible: root.whisperEngine === "openai"
+            width: parent.width
+            spacing: Style.space(8)
+            Dropdown {
+              width: (parent.width - Style.space(8)) / 2
+              label: "API model"
+              value: root.whisperApiModel
+              options: Model.whisperApiModelOptions()
+              foreground: root.panelForeground
+              fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+              onChanged: function(v) {
+                root.whisperApiModel = v;
+                root.persistSettings({ whisperApiModel: v });
+              }
+            }
+            TextField {
+              id: keyEnvField
+              width: (parent.width - Style.space(8)) / 2
+              text: root.whisperKeyEnv
+              foreground: root.panelForeground
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              placeholderText: "OPENAI_API_KEY"
+              onEditingFinished: {
+                root.whisperKeyEnv = text;
+                root.persistSettings({ whisperKeyEnv: text });
+              }
             }
           }
           Row {
@@ -1554,6 +1955,7 @@ Panel {
             font.family: "monospace"
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+          }
           }
         }
       }
