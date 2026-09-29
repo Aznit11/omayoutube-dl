@@ -64,7 +64,9 @@ Playback controls use `mpv --input-ipc-server=/tmp/omayoutube-mpv.sock` + `socat
     **voxtype** (`~/.local/share/voxtype/models/`). A GPU (Vulkan) build is
     strongly recommended — see below.
   - **OpenAI** (optional, off): `--cookies`-free API path; `whisper-1` gives
-    real SRT/VTT timestamps.
+    real SRT/VTT timestamps. **Privacy: this mode uploads the audio file to
+    `https://api.openai.com`** — use `local` (default) to keep everything on
+    your machine. The key is read from the env var at runtime and never saved.
 - **Search filter** — sort results by date/views or filter by duration.
 - **Browser cookies** — pass `--cookies-from-browser <browser>` to yt-dlp to get
   past YouTube's "confirm you're not a bot" checks.
@@ -109,7 +111,7 @@ Settings persist inline in `~/.config/omarchy/shell.json` on the plugin entry:
 | `whisperEngine` | `local` | `off`/`local`/`openai` |
 | `whisperLang` | `pt` | transcription language |
 | `whisperModel` | `medium` | `auto`/`small`/`medium`/`large-v3-turbo` |
-| `whisperCmd` | `auto` | `auto` or a custom template (`{wav} {input} {dir} {lang}`) |
+| `whisperCmd` | `auto` | `auto` or a custom template (`{wav} {input} {dir} {lang}`), run as a shell command |
 | `whisperApiModel` | `whisper-1` | OpenAI model (`whisper-1` for SRT) |
 | `whisperKeyEnv` | `OPENAI_API_KEY` | env var holding the API key |
 

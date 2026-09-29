@@ -247,6 +247,10 @@ function buildTranscribeScript(opts) {
   var cache = String(opts.cacheDir || cacheDir(opts.home));
   var engine = String(opts.engine || "local");
   var lang = String(opts.lang || "pt");
+  // Whitelist: "auto" or a short language tag. Values come from a Dropdown,
+  // but shell.json is hand-editable — never let anything else reach the
+  // generated script (it is interpolated into bash below).
+  if (!/^(auto|[a-z]{2,3}(-[A-Za-z]{2,4})?)$/.test(lang)) lang = "auto";
   var base = cache + "/tr-" + id;
 
   var L = [];
@@ -257,7 +261,10 @@ function buildTranscribeScript(opts) {
   L.push("mkdir -p " + shellQuote(outDir) + " " + shellQuote(cache));
   L.push("rm -f " + shellQuote(base) + ".*");
   L.push("echo 'Downloading audio for transcription...'");
-  var dlArgs = ["yt-dlp", "--no-playlist", "-f", "ba[language^=pt]/ba",
+  // Prefer a track in the transcription language when one exists, else best
+  // audio. Was hardcoded to pt — wrong for every other whisperLang.
+  var dlSel = (lang !== "auto") ? "ba[language^=" + lang + "]/ba" : "ba";
+  var dlArgs = ["yt-dlp", "--no-playlist", "--socket-timeout", "30", "-f", dlSel,
     "-x", "--audio-format", "m4a", "-o", base + ".%(ext)s"].concat(cookiesArgs(opts.cookies));
   dlArgs.push(url);
   var dlQuoted = [];
@@ -269,7 +276,10 @@ function buildTranscribeScript(opts) {
 
   if (engine === "openai") {
     var keyEnv = String(opts.keyEnv || "OPENAI_API_KEY");
+    // Env var name is interpolated into ${...} below — strict charset only.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv)) keyEnv = "OPENAI_API_KEY";
     var model = String(opts.apiModel || "whisper-1");
+    if (!/^[a-z0-9._-]+$/.test(model)) model = "whisper-1";
     var fmt = (model === "whisper-1") ? "srt" : "json";
     var outExt = (fmt === "srt") ? ".srt" : ".json";
     var srtOut = outDir + "/" + id + outExt;
@@ -303,6 +313,7 @@ function buildTranscribeScript(opts) {
   var tmpl = String(opts.localCmd || "auto");
   if (tmpl === "" || tmpl === "auto") {
     var prefModel = String(opts.model || "medium");
+    if (!/^[a-z0-9-]+$/.test(prefModel)) prefModel = "medium";
     L.push("echo 'Running local whisper (auto)...'");
     L.push("if command -v whisper-cli >/dev/null 2>&1; then");
     L.push("  model=\"\"");
@@ -312,11 +323,11 @@ function buildTranscribeScript(opts) {
     L.push("  echo 'whisper.cpp model: '$(basename \"$model\")");
     // Physical cores, not logical: hyperthreads make whisper.cpp slower here.
     L.push("  t=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l); [ \"${t:-0}\" -gt 0 ] 2>/dev/null || t=$(nproc)");
-    L.push("  whisper-cli -m \"$model\" -f \"$wav\" -l " + lang + " -t \"$t\" -pp -osrt -of " + shellQuote(base));
+    L.push("  whisper-cli -m \"$model\" -f \"$wav\" -l " + shellQuote(lang) + " -t \"$t\" -pp -osrt -of " + shellQuote(base));
     L.push("elif command -v whisper >/dev/null 2>&1; then");
-    L.push("  whisper \"$wav\" --model small --language " + lang + " --output_format srt --output_dir " + shellQuote(cache));
+    L.push("  whisper \"$wav\" --model small --language " + shellQuote(lang) + " --output_format srt --output_dir " + shellQuote(cache));
     L.push("elif command -v whisper-ctranslate2 >/dev/null 2>&1; then");
-    L.push("  whisper-ctranslate2 \"$wav\" --model small --language " + lang + " --output_format srt --output_dir " + shellQuote(cache));
+    L.push("  whisper-ctranslate2 \"$wav\" --model small --language " + shellQuote(lang) + " --output_format srt --output_dir " + shellQuote(cache));
     L.push("else");
     L.push("  echo 'ERROR: no whisper CLI found. Install whisper.cpp (whisper-cli), openai-whisper, or faster-whisper.'");
     L.push("  exit 6");
